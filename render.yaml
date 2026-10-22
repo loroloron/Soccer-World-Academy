@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: soccer-world-academy-booking
+    runtime: node
+    region: oregon
+    plan: 0.5c-512mb
+    rootDir: booking
+    buildCommand: npm test
+    startCommand: node server.mjs
+    healthCheckPath: /api/health
+    disk:
+      name: academy-bookings
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: 24.19.0
+      - key: NODE_ENV
+        value: production
+      - key: DB_PATH
+        value: /var/data/bookings.sqlite
+      - key: ALLOWED_ORIGINS
+        value: https://soccer-world-academy.onrender.com
+      - key: BOOKING_SECRET
+        generateValue: true
+      - key: ADMIN_TOKEN
+        sync: false

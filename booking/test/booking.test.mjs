@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {createApp} from '../server.mjs';
+import {slotsForDay,localHourToUTC,priceFor} from '../schedule.mjs';
+const NOW=new Date('2026-10-21T12:00:00Z');
+const secret='test-only-booking-secret-32-characters';
+const adminToken='test-only-owner-password';
+async function fixture(t){const dir=mkdtempSync(join(tmpdir(),'academy-booking-test-'));const options={dbPath:join(dir,'bookings.sqlite'),secret,adminToken,now:()=>NOW};let server=createApp(options);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));let base=`http://127.0.0.1:${server.address().port}`;t.after(async()=>{server.closeAllConnections();await new Promise(r=>server.close(r));rmSync(dir,{recursive:true,force:true});});return {call:async(path,body,headers={})=>{const r=await fetch(base+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json',...headers},body:body?JSON.stringify(body):undefined});return {status:r.status,data:await r.json()};},restart:async()=>{server.closeAllConnections();await new Promise(r=>server.close(r));server=createApp(options);await new Promise(r=>server.listen(0,'127.0.0.1',r));base=`http://127.0.0.1:${server.address().port}`;}};}
+const payload=(type='private',count=1)=>({date:'2026-10-23',start:localHourToUTC('2026-10-23',18),type,count,name:'Test Organizer',email:'organizer@example.test',idempotency:randomUUID()});
+test('weekly hours, past times, invalid dates and DST remain correct',()=>{
+ assert.equal(slotsForDay('2026-10-23',NOW).length,2);
+ assert.equal(slotsForDay('2026-10-24',NOW).length,4);
+ assert.equal(slotsForDay('2026-10-25',NOW).length,3);
+ assert.equal(localHourToUTC('2026-10-23',18),'2026-10-23T22:00:00.000Z');
+ assert.equal(localHourToUTC('2026-11-02',18),'2026-11-02T23:00:00.000Z');
+ assert.deepEqual(slotsForDay('2026-02-30',NOW),[]);
+ assert.deepEqual(slotsForDay('2026-10-20',NOW),[]);
+ assert.deepEqual(slotsForDay('2026-10-23',new Date('2026-10-24T00:00:00Z')),[]);
+ assert.equal(priceFor('private',1),50);assert.equal(priceFor('group',11),220);
+ assert.throws(()=>priceFor('group',10));assert.throws(()=>priceFor('group',11.5));assert.throws(()=>priceFor('private',2));
+});
+test('concurrent private/group bookings cannot reserve the same hour',async t=>{const f=await fixture(t);const results=await Promise.all([f.call('/api/bookings',payload()),f.call('/api/bookings',payload('group',11))]);assert.deepEqual(results.map(r=>r.status).sort(),[201,409]);const slots=await f.call('/api/slots?date=2026-10-23');assert.equal(slots.data.slots[0].available,false);assert.equal(slots.data.slots[1].available,true);});
+test('group minimum and price are enforced by server; caller price is ignored',async t=>{const f=await fixture(t);assert.equal((await f.call('/api/bookings',payload('group',10))).status,400);const r=await f.call('/api/bookings',{...payload('group',11),total:1});assert.equal(r.status,201);assert.equal(r.data.booking.total,220);assert.equal(r.data.booking.count,11);});
+test('idempotent retries, persistence, private access and cancellation',async t=>{const f=await fixture(t);const body=payload();const r=await f.call('/api/bookings',body);assert.equal(r.status,201);const {booking,manageToken}=r.data;const retry=await f.call('/api/bookings',body);assert.equal(retry.status,200);assert.equal(retry.data.booking.id,booking.id);assert.equal((await f.call('/api/bookings',{...body,name:'Different Organizer'})).status,409);await f.restart();assert.equal((await f.call('/api/slots?date=2026-10-23')).data.slots[0].available,false);assert.equal((await f.call('/api/bookings/'+booking.id)).status,404);const auth={'X-Booking-Token':manageToken};assert.equal((await f.call('/api/bookings/'+booking.id,undefined,auth)).data.booking.id,booking.id);assert.equal((await f.call('/api/bookings/'+booking.id+'/cancel',{},auth)).data.booking.status,'cancelled');assert.equal((await f.call('/api/slots?date=2026-10-23')).data.slots[0].available,true);assert.equal((await f.call('/api/bookings',payload())).status,201);});
+test('invalid times, dates and inputs never create bookings',async t=>{const f=await fixture(t);for(const changes of [{date:'2026-10-24',start:localHourToUTC('2026-10-24',18)},{date:'2026-10-20'},{start:'2026-10-23T21:30:00.000Z'},{email:'bad'},{count:0},{type:'other'},{date:'2026-02-30'},{start:'garbage'},{name:'A'}])assert.equal((await f.call('/api/bookings',{...payload(),...changes})).status,400,JSON.stringify(changes));assert.equal((await f.call('/api/slots?date=2026-10-23')).data.slots.every(s=>s.available),true);});
+test('owner endpoints, origin checks and static allowlist protect customer records',async t=>{const f=await fixture(t);assert.equal((await f.call('/api/admin/bookings')).status,401);const auth={Authorization:'Bearer '+adminToken};await f.call('/api/bookings',payload());const r=await f.call('/api/admin/bookings',undefined,auth);assert.equal(r.status,200);assert.equal(r.data.bookings[0].email,'organizer@example.test');assert.equal((await f.call('/api/bookings',payload(),{Origin:'https://untrusted.example'})).status,403);assert.equal((await f.call('/data/bookings.sqlite')).status,404);assert.equal((await f.call('/server.mjs')).status,404);assert.equal((await f.call('/api/health')).status,200);});
