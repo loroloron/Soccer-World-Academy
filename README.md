@@ -1,4 +1,4 @@
-# Soccer World Academy
+# Football Soccer Academy
 
 Independent static website for team training and private soccer lessons at Lawrence Park, Indianapolis, IN. Players must bring their own soccer ball.
 

@@ -1,4 +1,4 @@
-# Soccer World Academy bookings
+# Football Soccer Academy bookings
 
 One-hour private lessons ($50) and group bookings ($20 per player, at least 11 players). Monday–Friday 6–8 PM, Saturday 2–6 PM, Sunday 2–5 PM, all America/Indiana/Indianapolis time. A single organizer books an entire group; this does not accumulate individual signups toward a group minimum.
 
